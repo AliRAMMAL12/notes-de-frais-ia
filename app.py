@@ -5,12 +5,19 @@ import numpy as np
 import re
 
 st.set_page_config(
-    page_title="Notes de Frais IA",
+    page_title="GROUPE ISAGRI SERVICES - Notes de Frais IA",
     page_icon="📄",
     layout="wide"
 )
 
-st.title("📄 Notes de Frais IA")
+st.title("📄 GROUPE ISAGRI SERVICES")
+st.subheader("Notes de Frais IA")
+
+st.write(
+    "Analyse intelligente et contrôle automatisé des justificatifs"
+)
+
+st.markdown("---")
 
 @st.cache_resource
 def charger_ocr():
@@ -26,52 +33,24 @@ fichiers = st.file_uploader(
 
 if fichiers:
 
-    for fichier in fichiers:
+    total_general = 0
 
-        st.markdown("---")
+    for fichier in fichiers:
 
         image = Image.open(fichier)
 
-        col1, col2 = st.columns([1, 2])
+        image_np = np.array(image)
 
-        with col1:
-            st.image(
-                image,
-                caption=fichier.name,
-                use_container_width=True
-            )
+        try:
 
-        with col2:
-
-            image_np = np.array(image)
-
-            resultats = reader.readtext(
+            resultat_ocr = reader.readtext(
                 image_np,
                 detail=0
             )
 
-            texte = "\n".join(resultats)
+            texte = "\n".join(resultat_ocr)
 
-            st.subheader("📄 Résultat OCR")
-
-            st.text_area(
-                "Texte détecté",
-                texte,
-                height=200
-            )
-
-            # ANALYSE
-
-            montants = re.findall(
-                r"\d+[,.]\d+",
-                texte
-            )
-
-            dates = re.findall(
-                r"\d{2}[/-]\d{2}[/-]\d{4}",
-                texte
-            )
-
+            # Fournisseur
             fournisseur = "Non trouvé"
 
             lignes = texte.split("\n")
@@ -84,28 +63,83 @@ if fichiers:
                     fournisseur = ligne
                     break
 
-            st.subheader("📊 Analyse")
+            # Date
+            date_facture = "Non trouvée"
 
-            st.write(
-                f"🏪 Fournisseur : {fournisseur}"
+            dates = re.findall(
+                r"\d{2}[/-]\d{2}[/-]\d{4}",
+                texte
             )
 
             if dates:
-                st.write(
-                    f"📅 Date : {dates[0]}"
-                )
+                date_facture = dates[0]
+
+            # Montants
+            montants = re.findall(
+                r"\d+[,.]\d+",
+                texte
+            )
+
+            montant = 0
 
             if montants:
 
-                montant_max = max(
-                    [
-                        float(
-                            x.replace(",", ".")
-                        )
-                        for x in montants
-                    ]
-                )
+                try:
 
-                st.write(
-                    f"💰 Montant détecté : {montant_max} €"
-                )
+                    montant = max(
+                        [
+                            float(
+                                x.replace(",", ".")
+                            )
+                            for x in montants
+                        ]
+                    )
+
+                except:
+                    montant = 0
+
+            total_general += montant
+
+            # Catégorie
+            texte_min = texte.lower()
+
+            categorie = "Inconnue"
+
+            if (
+                "restaurant" in texte_min
+                or "repas" in texte_min
+                or "menu" in texte_min
+            ):
+                categorie = "Restaurant"
+
+            elif (
+                "auchan" in texte_min
+                or "carrefour" in texte_min
+                or "leclerc" in texte_min
+            ):
+                categorie = "Supermarché"
+
+            elif (
+                "hotel" in texte_min
+                or "hôtel" in texte_min
+            ):
+                categorie = "Hôtel"
+
+            st.markdown("---")
+
+            st.subheader(f"📄 {fichier.name}")
+
+            st.success(
+                f"🏪 Fournisseur : {fournisseur}"
+            )
+
+            st.info(
+                f"📅 Date : {date_facture}"
+            )
+
+            st.success(
+                f"💰 Montant : {montant:.2f} €"
+            )
+
+            st.info(
+                f
