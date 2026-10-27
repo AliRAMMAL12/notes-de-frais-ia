@@ -2,21 +2,15 @@ import streamlit as st
 from PIL import Image
 import easyocr
 import numpy as np
+import re
 
 st.set_page_config(
-    page_title="GROUPE ISAGRI SERVICES - Notes de Frais IA",
+    page_title="Notes de Frais IA",
     page_icon="📄",
     layout="wide"
 )
 
-st.title("📄 GROUPE ISAGRI SERVICES")
-st.subheader("Notes de Frais IA")
-
-st.write(
-    "Analyse intelligente et contrôle automatisé des justificatifs"
-)
-
-st.markdown("---")
+st.title("📄 Notes de Frais IA")
 
 @st.cache_resource
 def charger_ocr():
@@ -31,8 +25,6 @@ fichiers = st.file_uploader(
 )
 
 if fichiers:
-
-    st.success(f"{len(fichiers)} facture(s) importée(s)")
 
     for fichier in fichiers:
 
@@ -51,31 +43,69 @@ if fichiers:
 
         with col2:
 
-            st.subheader(f"📄 {fichier.name}")
+            image_np = np.array(image)
 
-            try:
+            resultats = reader.readtext(
+                image_np,
+                detail=0
+            )
 
-                image_np = np.array(image)
+            texte = "\n".join(resultats)
 
-                texte = reader.readtext(
-                    image_np,
-                    detail=0
+            st.subheader("📄 Résultat OCR")
+
+            st.text_area(
+                "Texte détecté",
+                texte,
+                height=200
+            )
+
+            # ANALYSE
+
+            montants = re.findall(
+                r"\d+[,.]\d+",
+                texte
+            )
+
+            dates = re.findall(
+                r"\d{2}[/-]\d{2}[/-]\d{4}",
+                texte
+            )
+
+            fournisseur = "Non trouvé"
+
+            lignes = texte.split("\n")
+
+            for ligne in lignes:
+
+                ligne = ligne.strip()
+
+                if len(ligne) > 3:
+                    fournisseur = ligne
+                    break
+
+            st.subheader("📊 Analyse")
+
+            st.write(
+                f"🏪 Fournisseur : {fournisseur}"
+            )
+
+            if dates:
+                st.write(
+                    f"📅 Date : {dates[0]}"
                 )
 
-                st.text_area(
-                    "Texte détecté",
-                    "\n".join(texte),
-                    height=250
+            if montants:
+
+                montant_max = max(
+                    [
+                        float(
+                            x.replace(",", ".")
+                        )
+                        for x in montants
+                    ]
                 )
 
-            except Exception as erreur:
-
-                st.error(
-                    f"Erreur OCR : {erreur}"
+                st.write(
+                    f"💰 Montant détecté : {montant_max} €"
                 )
-
-st.markdown("---")
-
-st.caption(
-    "GROUPE ISAGRI SERVICES • Notes de Frais IA • V1.1"
-)
