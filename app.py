@@ -1,5 +1,7 @@
 import streamlit as st
 from PIL import Image
+import easyocr
+import numpy as np
 
 st.set_page_config(
     page_title="GROUPE ISAGRI SERVICES - Notes de Frais IA",
@@ -16,13 +18,11 @@ st.write(
 
 st.markdown("---")
 
-col1, col2, col3 = st.columns(3)
+@st.cache_resource
+def charger_ocr():
+    return easyocr.Reader(["fr", "en"])
 
-col1.metric("📄 Factures", "0")
-col2.metric("💰 Montant Total", "0 €")
-col3.metric("⚠️ Alertes", "0")
-
-st.markdown("---")
+reader = charger_ocr()
 
 fichiers = st.file_uploader(
     "Importer vos factures",
@@ -36,16 +36,46 @@ if fichiers:
 
     for fichier in fichiers:
 
+        st.markdown("---")
+
         image = Image.open(fichier)
 
-        st.image(
-            image,
-            caption=fichier.name,
-            width=500
-        )
+        col1, col2 = st.columns([1, 2])
+
+        with col1:
+            st.image(
+                image,
+                caption=fichier.name,
+                use_container_width=True
+            )
+
+        with col2:
+
+            st.subheader(f"📄 {fichier.name}")
+
+            try:
+
+                image_np = np.array(image)
+
+                texte = reader.readtext(
+                    image_np,
+                    detail=0
+                )
+
+                st.text_area(
+                    "Texte détecté",
+                    "\n".join(texte),
+                    height=250
+                )
+
+            except Exception as erreur:
+
+                st.error(
+                    f"Erreur OCR : {erreur}"
+                )
 
 st.markdown("---")
 
 st.caption(
-    "GROUPE ISAGRI SERVICES • Notes de Frais IA • V1.0"
+    "GROUPE ISAGRI SERVICES • Notes de Frais IA • V1.1"
 )
