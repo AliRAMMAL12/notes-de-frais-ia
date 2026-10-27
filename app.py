@@ -5,19 +5,13 @@ import numpy as np
 import re
 
 st.set_page_config(
-    page_title="GROUPE ISAGRI SERVICES - Notes de Frais IA",
+    page_title="Notes de Frais IA",
     page_icon="📄",
     layout="wide"
 )
 
-st.title("📄 GROUPE ISAGRI SERVICES")
-st.subheader("Notes de Frais IA")
-
-st.write(
-    "Analyse intelligente et contrôle automatisé des justificatifs"
-)
-
-st.markdown("---")
+st.title("📄 Notes de Frais IA")
+st.write("Analyse intelligente et contrôle automatisé des justificatifs")
 
 @st.cache_resource
 def charger_ocr():
@@ -50,7 +44,6 @@ if fichiers:
 
             texte = "\n".join(resultat_ocr)
 
-            # Fournisseur
             fournisseur = "Non trouvé"
 
             lignes = texte.split("\n")
@@ -63,18 +56,16 @@ if fichiers:
                     fournisseur = ligne
                     break
 
-            # Date
-            date_facture = "Non trouvée"
-
             dates = re.findall(
                 r"\d{2}[/-]\d{2}[/-]\d{4}",
                 texte
             )
 
+            date_facture = "Non trouvée"
+
             if dates:
                 date_facture = dates[0]
 
-            # Montants
             montants = re.findall(
                 r"\d+[,.]\d+",
                 texte
@@ -84,62 +75,47 @@ if fichiers:
 
             if montants:
 
-                try:
+                valeurs = [
+                    float(x.replace(",", "."))
+                    for x in montants
+                ]
 
-                    montant = max(
-                        [
-                            float(
-                                x.replace(",", ".")
-                            )
-                            for x in montants
-                        ]
-                    )
-
-                except:
-                    montant = 0
+                montant = max(valeurs)
 
             total_general += montant
 
-            # Catégorie
             texte_min = texte.lower()
 
             categorie = "Inconnue"
 
-            if (
-                "restaurant" in texte_min
-                or "repas" in texte_min
-                or "menu" in texte_min
-            ):
+            if "restaurant" in texte_min or "repas" in texte_min:
                 categorie = "Restaurant"
 
-            elif (
-                "auchan" in texte_min
-                or "carrefour" in texte_min
-                or "leclerc" in texte_min
-            ):
+            elif "auchan" in texte_min:
                 categorie = "Supermarché"
 
-            elif (
-                "hotel" in texte_min
-                or "hôtel" in texte_min
-            ):
+            elif "hotel" in texte_min or "hôtel" in texte_min:
                 categorie = "Hôtel"
 
             st.markdown("---")
 
             st.subheader(f"📄 {fichier.name}")
 
-            st.success(
-                f"🏪 Fournisseur : {fournisseur}"
+            st.write(f"🏪 Fournisseur : {fournisseur}")
+            st.write(f"📅 Date : {date_facture}")
+            st.write(f"💰 Montant : {montant:.2f} €")
+            st.write(f"📂 Catégorie : {categorie}")
+
+        except Exception as erreur:
+
+            st.error(
+                f"Erreur d'analyse : {erreur}"
             )
 
-            st.info(
-                f"📅 Date : {date_facture}"
-            )
+    st.markdown("---")
 
-            st.success(
-                f"💰 Montant : {montant:.2f} €"
-            )
+    st.subheader("📊 Synthèse")
 
-            st.info(
-                f
+    st.success(
+        f"💰 Total détecté : {total_general:.2f} €"
+    )
