@@ -1,335 +1,236 @@
-"""Extraction des informations d'un ticket à partir du texte brut de l'OCR.
+"""Tests de l'extraction sur le texte des 4 tickets réels.
 
-Ce module ne dépend ni de Streamlit ni d'EasyOCR : il peut donc être testé
-facilement (voir test_extraction.py).
+Le texte ci-dessous est la retranscription de ce que l'OCR lit (une "ligne" par
+zone de texte, dans l'ordre de lecture, libellé et montant souvent séparés).
+
+Lancer :  python test_extraction.py      (ou)      pytest test_extraction.py
 """
 
-import difflib
-import re
-import unicodedata
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# =========================================================
-# PARAMÈTRES MÉTIER (à adapter)
-# =========================================================
+from extraction import analyser
 
-# Fournisseurs connus : mot-clé -> (nom affiché, catégorie)
-FOURNISSEURS = {
-    "auchan": ("Auchan", "Supermarché"),
-    "carrefour": ("Carrefour", "Supermarché"),
-    "leclerc": ("E.Leclerc", "Supermarché"),
-    "julia": ("Chez Julia", "Restaurant"),
-    "goelette": ("La Goélette", "Restaurant"),
-    "copains": ("Copains Comme Cochons", "Restaurant"),
+AUJOURDHUI = datetime(2026, 10, 27)
+
+COPAINS = """RESTAURANT
+COPAINS COMNE COCHONS
+26 RUE NEUVE
+35500 VITRE
+SIRET 8000762000014
+12:15
+30-09-2026
+0032007
+5x 20.18
+MENU COMPLET AM 100.90
+TOTAL
+100.90
+CARTE1
+100.90
+TVA2 10%
+9.17
+TL-TVA
+9.17
+TL-HT
+91.73
+TL-TTC
+100.90
+BONNE JOURNEE
+REVENEZ NOUS VISITER"""
+
+AUCHAN = """Auchan.fr
+DARDILLY
+Portes de Lyon - RN6 - Lieu dit la Garde..
+69570 Dardilly
+04.37.49.11.11
+Vous avez été accueilli par SCO
+Le 30 septembre 2026 à 18:12:56
+Caisse : 134
+Ticket : 8867
+Hôte(sse) : 459
+*STAND BOULANGERIE
+1,45
+*DISCO GRAND FORMAT
+5,36
+*CRISTALINE EAU DE ..
+0,20
+SIGNAL DENT SEL CAM..
+2,97
+Total
+20,44 €
+TVA%
+TVA
+Net
+Brut
+5,50
+0,92
+16,55
+17,47
+20,00
+0,50
+2,47
+2,97
+Brut
+1,42
+19,02
+20,44
+Reçu
+TITRE RESTAURANT DE..
+17,47
+Reçu
+CARTE BANCAIRE
+2,97
+TOT. ARTICLES ELIGIBLES TR
+17,47
+TOT. PAIEMENTS PAR TR
+17,47
+7 Articles
+Avec votre carte de fidélité Auchan
+vous auriez cagnotté :1,32 Euros
+Nouveau scan correct"""
+
+JULIA = """Chez Julia
+168 Boulevard Massena
+75013 PARIS
+France
+SIREN : 991749649
+TVA : FR66991749649
+Siret : 99174964900018
+NAF : 56.30Z
+Vente
+Caisse enregistreuse N° : HA2CYDZ7
+Type de document : Ticket
+Commande N° : 33212
+Numéro du reçu : TIK:17156/
+b44466cd99afd614/7498
+2026-09-17 22:52:57
+Produit(s)
+EUR
+3x Ricard
+13,50 A
+(3×4,50)
+1x Grimbergen blonde ou blanche -
+5,50 A
+25cl
+(1×5,50)
+1x Monbazillac ( Château
+5,00 A
+Beautrand )
+(1×5,00)
+1x 1664 - 25cl
+5,20 A
+(1×5,20)
+1x Julia
+17,00 B
+(1×17,00)
+1x Palerma
+16,00 B
+(1×16,00)
+1x 75cl Côte du Rhône ( Les 3
+22,00 A
+garçons )
+2x Espresso
+5,20 B
+(2×2,60)
+Total TTC
+89,40
+89,40
+Autres
+TOTAL
+HT : 77,39
+TVA : 12,00
+TTC : 89,40
+Récapitulatif de TVA
+B-10.0% de 38,20
+A-20.0% de 51,20
+Effectué par : Khaled
+Version : FLATPAY POS v1.1.2609140 (587)"""
+
+GOELETTE = """LA GOÉLETTE
+57 quai François 1er, 76470 Le Tréport
+France
+Tél : 02 35 86 11 71 -
+95103499000014 - 5610A - FR41951034990
+19/09/2026 14:58
+2 couverts
+Salle - 3
+Gérant
+QTE DÉNOMINATION / PRIX UNITAIRE
+TOTAL
+2
+Repas
+79,20 €
+39,60 €
+Carte de crédit
+79,20 €
+HT
+TVA
+TTC
+TVA 10% (10%)
+34,73 €
+3,47 €
+38,20 €
+TVA 20% (20%)
+34,17 €
+6,83 €
+41,00 €
+Total
+68,90 €
+10,30 €
+79,20 €
+Total par couvert
+39,60 €
+Total
+79,20 €
+2 couverts, 1 lignes, vendu par
+Gérant(031d), le 2026-09-19 14:58:34 sur
+la caisse 9050, version 12.3.1
+Justificatif non valable pour encaissement n°
+44
+Ticket original n° 9050 - 2671
+Système de caisse certifié LNE
+Merci de votre visite et à bientôt"""
+
+# (fournisseur, date, montant, catégorie, convives, alcool, alcool estimé €)
+# Julia : 3 Ricard 13,50 + Grimbergen 5,50 + Monbazillac 5,00 + 1664 5,20
+#         + Côte du Rhône 22,00 = 51,20 (les cocktails "Julia"/"Palerma" ne sont
+#         pas reconnus comme alcool : c'est une estimation, modifiable dans l'appli)
+ATTENDU = {
+    "copains": ("Copains Comme Cochons", "30/09/2026", 100.90, "Restaurant", 5, "Non", 0.0),
+    "auchan": ("Auchan", "30/09/2026", 20.44, "Supermarché", 1, "Non", 0.0),
+    "julia": ("Chez Julia", "17/09/2026", 89.40, "Restaurant", 1, "Oui", 51.20),
+    "goelette": ("La Goélette", "19/09/2026", 79.20, "Restaurant", 2, "Non", 0.0),
 }
-
-# Mots-clés de catégorie (utilisés si le fournisseur est inconnu)
-CATEGORIES = {
-    "Restaurant": ["restaurant", "repas", "menu", "brasserie", "addition", "couvert"],
-    "Supermarché": ["supermarche", "hypermarche", "carrefour", "leclerc", "auchan"],
-    "Carburant": ["carburant", "gazole", "diesel", "sp95", "sp98", "totalenergies"],
-    "Hôtel": ["hotel", "nuitee", "chambre"],
-    "Transport": ["sncf", "billet", "peage", "autoroute", "parking", "taxi"],
-}
-
-MOTS_ALCOOL = [
-    "ricard", "pastis", "grimbergen", "monbazillac", "vin", "vins",
-    "biere", "bieres", "whisky", "vodka", "champagne", "rhum", "gin",
-    "cognac", "cidre", "kir", "spritz", "cocktail", "armagnac", "muscat",
-    "cote du rhone", "chardonnay", "merlot", "pinot",
-]
-REGEX_ALCOOL = re.compile(
-    r"(?<![a-z0-9])(" + "|".join(re.escape(m) for m in MOTS_ALCOOL) + r")(?![a-z0-9])"
-)
-REGEX_1664 = re.compile(r"(?<!\d)1664(?!\d)")  # la bière "1664"
-
-# Mots-clés du montant final, par priorité (3 = le plus fiable)
-MOTS_MONTANT = [
-    ("net a payer", 3),
-    ("total ttc", 3),
-    ("montant ttc", 3),
-    ("a payer", 3),
-    ("total carte", 3),
-    ("ttc", 2),
-    ("total", 2),
-    ("carte", 1),
-]
-LIGNES_IGNOREES = ("par couvert", "par personne", "fidelite", "cagnott")
-
-MOIS = {
-    "janvier": 1, "fevrier": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6,
-    "juillet": 7, "aout": 8, "septembre": 9, "octobre": 10, "novembre": 11,
-    "decembre": 12,
-}
-
-# =========================================================
-# EXPRESSIONS RÉGULIÈRES
-# =========================================================
-
-# Montants : "100.90", "20,44", "1 234,56" (en évitant les n° de téléphone)
-REGEX_MONTANT = re.compile(
-    r"(?<![\d.,])\d+(?:[ \u00a0]\d{3})*[,.]\d{2}(?!\d|[.,]\d)"
-)
-
-# Dates : 30/09/2026 ou 30-09-2026 ; 2026-09-17 ; "30 septembre 2026" ; 30/09/26
-REGEX_DMY4 = re.compile(r"(?<![\d/.\-])(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})(?!\d)")
-REGEX_ISO = re.compile(r"(?<![\d/.\-])(\d{4})-(\d{2})-(\d{2})(?!\d)")
-REGEX_TEXTE = re.compile(r"(?<!\d)(\d{1,2})\s+(" + "|".join(MOIS) + r")\s+(\d{4})")
-REGEX_DMY2 = re.compile(r"(?<![\d/.\-])(\d{2})/(\d{2})/(\d{2})(?![\d/.\-])")
+TEXTES = {"copains": COPAINS, "auchan": AUCHAN, "julia": JULIA, "goelette": GOELETTE}
 
 
-# =========================================================
-# OUTILS
-# =========================================================
+def test_tickets():
+    echecs = 0
+    for nom, texte in TEXTES.items():
+        r = analyser(nom, texte, AUJOURDHUI)
+        obtenu = (r["Fournisseur"], r["Date"], r["Montant (€)"],
+                  r["Catégorie"], r["Convives"], r["Alcool"], r["Alcool estimé (€)"])
+        ok = obtenu == ATTENDU[nom]
+        echecs += not ok
+        print(f"{'OK ' if ok else 'KO '} {nom:9} {obtenu}")
+        if not ok:
+            print(f"      attendu : {ATTENDU[nom]}")
+        print(f"      statut  : {r['Statut']} | {r['Remarques']}")
+    assert echecs == 0, f"{echecs} ticket(s) mal analysé(s)"
 
 
-def normaliser(texte: str) -> str:
-    """Minuscules, sans accents, '×' -> 'x' (pour des recherches robustes)."""
-    texte = texte.replace("×", "x")
-    texte = unicodedata.normalize("NFKD", texte)
-    return texte.encode("ascii", "ignore").decode("ascii").lower()
+def test_fournisseur_mal_lu_par_l_ocr():
+    r = analyser("x", "LA GOELETTF\n12/09/2026\nTotal\n10,00 €", AUJOURDHUI)
+    assert r["Fournisseur"] == "La Goélette", r["Fournisseur"]
 
 
-def convertir_montants(ligne: str) -> list[float]:
-    valeurs = []
-    for m in REGEX_MONTANT.findall(ligne):
-        try:
-            valeurs.append(float(m.replace("\u00a0", "").replace(" ", "").replace(",", ".")))
-        except ValueError:
-            pass
-    return valeurs
+def test_alcool_pas_de_double_comptage():
+    texte = "Restaurant\n12/09/2026\n1x Vin rouge\nCote du rhone\n22,00 A\nTotal TTC\n22,00"
+    r = analyser("x", texte, AUJOURDHUI)
+    assert r["Alcool estimé (€)"] == 22.0, r["Alcool estimé (€)"]
 
 
-def _montants_ligne_ou_suivante(lignes: list[str], i: int) -> list[float]:
-    """Montants de la ligne i ; sinon de la ligne suivante.
-
-    L'OCR sépare souvent le libellé ("TOTAL") et le chiffre ("100.90") sur
-    deux lignes. On n'accepte la ligne suivante que si elle contient un seul
-    montant et n'est pas une ligne de HT/TVA.
-    """
-    valeurs = convertir_montants(lignes[i])
-    if valeurs or i + 1 >= len(lignes):
-        return valeurs
-    suivante = lignes[i + 1]
-    if re.search(r"\b(ht|tva)\b", suivante):
-        return []
-    montants = convertir_montants(suivante)
-    return montants if len(montants) == 1 else []
-
-
-# =========================================================
-# EXTRACTION
-# =========================================================
-
-
-def _fournisseur_approx(entete: str):
-    """Tolère les fautes de l'OCR (ex. 'goelettf' -> 'goelette') sur les noms longs."""
-    cles = [c for c in FOURNISSEURS if len(c) >= 6]
-    for mot in re.findall(r"[a-z]{6,}", entete):
-        proche = difflib.get_close_matches(mot, cles, n=1, cutoff=0.8)
-        if proche:
-            return FOURNISSEURS[proche[0]]
-    return None
-
-
-def extraire_fournisseur(texte: str, texte_norm: str):
-    """Retourne (fournisseur, catégorie_déduite_ou_None)."""
-    entete = "\n".join(texte_norm.split("\n")[:8])  # le nom est en haut du ticket
-
-    for zone in (entete, texte_norm):
-        for cle, (nom, categorie) in FOURNISSEURS.items():
-            if re.search(rf"\b{cle}", zone):
-                return nom, categorie
-
-    approx = _fournisseur_approx(entete)
-    if approx:
-        return approx
-
-    # Repli : première ligne "propre" (assez de lettres, pas une date)
-    for ligne in texte.split("\n"):
-        ligne = ligne.strip()
-        if sum(c.isalpha() for c in ligne) >= 4 and not REGEX_DMY4.search(ligne):
-            return ligne.title(), None
-    return "Non trouvé", None
-
-
-def extraire_date(texte_norm: str, aujourdhui: datetime | None = None) -> str:
-    """Première date valide et plausible, au format JJ/MM/AAAA."""
-    aujourdhui = aujourdhui or datetime.now()
-
-    def valide(j, m, a):
-        try:
-            d = datetime(a, m, j)
-        except ValueError:
-            return None
-        if aujourdhui.year - 5 <= d.year and d <= aujourdhui + timedelta(days=1):
-            return d
-        return None
-
-    essais = [
-        (REGEX_DMY4, lambda g: (int(g[0]), int(g[1]), int(g[2]))),
-        (REGEX_ISO, lambda g: (int(g[2]), int(g[1]), int(g[0]))),
-        (REGEX_TEXTE, lambda g: (int(g[0]), MOIS[g[1]], int(g[2]))),
-        (REGEX_DMY2, lambda g: (int(g[0]), int(g[1]), 2000 + int(g[2]))),
-    ]
-    for regex, extraire in essais:
-        for m in regex.finditer(texte_norm):
-            d = valide(*extraire(m.groups()))
-            if d:
-                return d.strftime("%d/%m/%Y")
-    return ""
-
-
-def extraire_montant(texte_norm: str):
-    """Retourne (montant, fiable)."""
-    lignes = texte_norm.split("\n")
-    candidats = []  # (priorité, valeur)
-
-    for i, ligne in enumerate(lignes):
-        if any(x in ligne for x in LIGNES_IGNOREES):
-            continue
-        if re.search(r"\btva\b", ligne) and "ttc" not in ligne:
-            continue  # ligne de TVA seule
-        for mot, priorite in MOTS_MONTANT:
-            if mot in ligne:
-                candidats += [(priorite, v) for v in _montants_ligne_ou_suivante(lignes, i)]
-                break
-
-    if candidats:
-        meilleure = max(p for p, _ in candidats)
-        return max(v for p, v in candidats if p == meilleure), True
-
-    # Dernier recours : plus gros montant du ticket (peu fiable)
-    tous = convertir_montants(texte_norm)
-    return (max(tous), False) if tous else (0.0, False)
-
-
-def extraire_titres_restaurant(texte_norm: str) -> float:
-    """Montant payé en titres-restaurant (0 si aucun)."""
-    lignes = texte_norm.split("\n")
-    for i, ligne in enumerate(lignes):
-        if re.search(r"(titre|ticket)s?[- ]restaurant|\b(swile|edenred|pluxee)\b", ligne):
-            valeurs = _montants_ligne_ou_suivante(lignes, i)
-            if valeurs:
-                return max(valeurs)
-    return 0.0
-
-
-def extraire_convives(texte_norm: str):
-    """Nombre de convives si on peut le déduire, sinon None."""
-    m = re.search(r"(\d{1,2})\s*couverts?\b", texte_norm)
-    if m:
-        return int(m.group(1))
-    m = re.search(r"(\d{1,2})\s*x\s*\d+[.,]\d{2}\s*\n\s*menu", texte_norm)
-    if m:
-        return int(m.group(1))
-    return None
-
-
-def extraire_categorie(texte_norm: str, categorie_fournisseur) -> str:
-    if categorie_fournisseur:
-        return categorie_fournisseur
-    for categorie, mots in CATEGORIES.items():
-        if any(mot in texte_norm for mot in mots):
-            return categorie
-    return "Inconnue"
-
-
-def detecter_alcool(texte_norm: str) -> str:
-    if REGEX_ALCOOL.search(texte_norm) or REGEX_1664.search(texte_norm):
-        return "Oui"
-    return "Non"
-
-
-def estimer_montant_alcool(texte_norm: str) -> float:
-    """Somme des lignes d'articles contenant un mot d'alcool (estimation).
-
-    Le prix est cherché sur la ligne de l'article, sinon sur les 2 lignes
-    suivantes (l'OCR sépare souvent le nom et le prix), en s'arrêtant au
-    prochain article ou aux lignes de total / TVA.
-    """
-    lignes = texte_norm.split("\n")
-    utilisees = set()  # lignes de prix déjà comptées (évite les doubles comptages)
-    total = 0.0
-
-    for i, ligne in enumerate(lignes):
-        if not (REGEX_ALCOOL.search(ligne) or REGEX_1664.search(ligne)):
-            continue
-
-        valeurs = convertir_montants(ligne)
-        if valeurs:
-            if i not in utilisees:
-                utilisees.add(i)
-                total += max(valeurs)
-            continue
-
-        trouves = []
-        for j in range(i + 1, min(i + 3, len(lignes))):
-            suivante = lignes[j]
-            if re.match(r"\s*\d+\s*x\s+\S", suivante):  # nouvel article
-                break
-            if re.search(r"\b(total|ttc|tva|ht)\b", suivante):
-                break
-            if j in utilisees:
-                continue
-            valeurs = convertir_montants(suivante)
-            if valeurs:
-                trouves.append((j, max(valeurs)))
-        if trouves:
-            j, valeur = max(trouves, key=lambda t: t[1])
-            utilisees.update(j for j, _ in trouves)
-            total += valeur
-
-    return round(total, 2)
-
-
-# =========================================================
-# ANALYSE COMPLÈTE D'UN TICKET
-# =========================================================
-
-
-def analyser(nom_fichier: str, texte: str, aujourdhui: datetime | None = None) -> dict:
-    texte_norm = normaliser(texte)
-
-    fournisseur, cat_fournisseur = extraire_fournisseur(texte, texte_norm)
-    date = extraire_date(texte_norm, aujourdhui)
-    montant, fiable = extraire_montant(texte_norm)
-    categorie = extraire_categorie(texte_norm, cat_fournisseur)
-    convives = extraire_convives(texte_norm)
-
-    problemes, remarques = [], []
-    if fournisseur == "Non trouvé":
-        problemes.append("fournisseur non trouvé")
-    if not date:
-        problemes.append("date non trouvée")
-    if montant == 0:
-        problemes.append("montant non trouvé")
-    elif not fiable:
-        problemes.append("montant incertain")
-
-    if categorie == "Restaurant" and convives is None:
-        remarques.append("nombre de convives non détecté (1 par défaut)")
-    alcool = detecter_alcool(texte_norm)
-    montant_alcool = estimer_montant_alcool(texte_norm) if alcool == "Oui" else 0.0
-    if montant > 0:
-        montant_alcool = min(montant_alcool, montant)
-    if alcool == "Oui" and montant_alcool == 0:
-        remarques.append("alcool détecté mais montant non estimé")
-    titres = extraire_titres_restaurant(texte_norm)
-    if titres:
-        remarques.append(f"payé en partie en titres-restaurant ({titres:.2f} €)")
-    if re.search(r"non valable pour encaissement|duplicata", texte_norm):
-        remarques.append("mention « non valable pour encaissement » / duplicata")
-
-    return {
-        "Fichier": nom_fichier,
-        "Fournisseur": fournisseur,
-        "Date": date,
-        "Montant (€)": montant,
-        "Catégorie": categorie,
-        "Convives": convives or 1,
-        "Alcool": alcool,
-        "Alcool estimé (€)": montant_alcool,
-        "Statut": "⚠️ À vérifier" if problemes else "✅ OK",
-        "Remarques": " ; ".join(problemes + remarques),
-    }
+if __name__ == "__main__":
+    test_tickets()
+    test_fournisseur_mal_lu_par_l_ocr()
+    test_alcool_pas_de_double_comptage()
+    print("\nTous les tests passent ✅")
