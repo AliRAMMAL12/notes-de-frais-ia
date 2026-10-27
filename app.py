@@ -6,7 +6,13 @@ import pandas as pd
 import streamlit as st
 from PIL import Image, ImageOps
 
+from export_excel import exporter_excel
 from extraction import CATEGORIES, analyser
+
+try:
+    import fitz  # PyMuPDF (lecture des PDF)
+except ImportError:
+    fitz = None
 
 # =========================================================
 # CONFIGURATION
@@ -18,8 +24,10 @@ st.set_page_config(
     layout="wide",
 )
 
+MAX_PAGES_PDF = 5
+
 # =========================================================
-# OCR
+# LECTURE DES DOCUMENTS (images + PDF)
 # =========================================================
 
 
@@ -28,19 +36,34 @@ def charger_ocr():
     return easyocr.Reader(["fr", "en"])
 
 
-def preparer_image(octets: bytes) -> np.ndarray:
-    """Corrige l'orientation (photos de téléphone) et limite la taille."""
-    image = Image.open(BytesIO(octets))
+def ocr_image(image: Image.Image) -> str:
+    """OCR d'une image : orientation corrigée, taille limitée."""
     image = ImageOps.exif_transpose(image).convert("RGB")
     image.thumbnail((2200, 2200))
-    return np.array(image)
+    return "\n".join(charger_ocr().readtext(np.array(image), detail=0))
 
 
 @st.cache_data(show_spinner=False)
-def lire_facture(octets: bytes) -> str:
-    """OCR mis en cache : une même image n'est jamais relue deux fois."""
-    lignes = charger_ocr().readtext(preparer_image(octets), detail=0)
-    return "\n".join(lignes)
+def lire_document(nom: str, octets: bytes):
+    """Retourne (texte, aperçu en bytes). Mis en cache : jamais relu deux fois."""
+    if not nom.lower().endswith(".pdf"):
+        return ocr_image(Image.open(BytesIO(octets))), octets
+
+    if fitz is None:
+        raise RuntimeError("Lecture des PDF indisponible : ajouter 'pymupdf' à requirements.txt")
+
+    textes, apercu = [], None
+    with fitz.open(stream=octets, filetype="pdf") as pdf:
+        for page in list(pdf)[:MAX_PAGES_PDF]:
+            texte_page = page.get_text()
+            pix = page.get_pixmap(dpi=200)
+            png = pix.tobytes("png")
+            apercu = apercu or png
+            if len(texte_page.strip()) >= 30:
+                textes.append(texte_page)  # PDF numérique : texte direct, sans OCR
+            else:
+                textes.append(ocr_image(Image.open(BytesIO(png))))  # PDF scanné
+    return "\n".join(textes), apercu
 
 
 # =========================================================
@@ -57,25 +80,37 @@ with st.sidebar:
     plafond_resto = st.number_input(
         "Plafond restaurant par personne (€)", min_value=0.0, value=25.0, step=1.0
     )
+    st.header("👤 Salarié")
+    salarie = st.text_input("Nom du salarié (ajouté aux exports)")
 
 fichiers = st.file_uploader(
-    "Importer vos factures",
-    type=["jpg", "jpeg", "png"],
+    "Importer vos factures (photos ou PDF)",
+    type=["jpg", "jpeg", "png", "pdf"],
     accept_multiple_files=True,
 )
 
-if fichiers:
-    donnees, textes = [], {}
+photo = None
+with st.expander("📷 Prendre un ticket en photo (téléphone / webcam)"):
+    photo = st.camera_input("Photographier le ticket")
+
+sources = [(f.name, f.getvalue()) for f in fichiers]
+if photo is not None:
+    sources.append(("photo_camera.jpg", photo.getvalue()))
+
+if sources:
+    donnees, textes, apercus = [], {}, {}
     barre = st.progress(0.0, text="Analyse en cours...")
 
-    for i, fichier in enumerate(fichiers, start=1):
+    for i, (nom, octets) in enumerate(sources, start=1):
         try:
-            texte = lire_facture(fichier.getvalue())
-            textes[fichier.name] = texte
-            donnees.append(analyser(fichier.name, texte))
+            texte, apercu = lire_document(nom, octets)
+            textes[nom], apercus[nom] = texte, apercu
+            ligne = analyser(nom, texte)
+            ligne["Validation"] = "À valider"
+            donnees.append(ligne)
         except Exception as erreur:
-            st.error(f"Erreur sur {fichier.name} : {erreur}")
-        barre.progress(i / len(fichiers), text=f"Analyse {i}/{len(fichiers)}")
+            st.error(f"Erreur sur {nom} : {erreur}")
+        barre.progress(i / len(sources), text=f"Analyse {i}/{len(sources)}")
 
     barre.empty()
 
@@ -85,23 +120,39 @@ if fichiers:
 
     # ---------- Tableau éditable ----------
     st.markdown("## 📊 Résultats")
-    st.caption("Tu peux corriger directement les cellules (montant, convives, catégorie...).")
+    st.caption(
+        "Corrige directement les cellules si besoin (montant, convives, alcool estimé, "
+        "catégorie...) puis choisis le statut de validation."
+    )
 
+    colonnes = [
+        "Fichier", "Fournisseur", "Date", "Montant (€)", "Catégorie", "Convives",
+        "Alcool", "Alcool estimé (€)", "Statut", "Validation", "Remarques",
+    ]
     df = st.data_editor(
-        pd.DataFrame(donnees),
+        pd.DataFrame(donnees)[colonnes],
         use_container_width=True,
         hide_index=True,
         disabled=["Fichier", "Statut", "Remarques"],
         column_config={
             "Montant (€)": st.column_config.NumberColumn(format="%.2f €", min_value=0.0),
+            "Alcool estimé (€)": st.column_config.NumberColumn(
+                format="%.2f €", min_value=0.0,
+                help="Estimation d'après les lignes d'articles reconnues comme alcool.",
+            ),
             "Catégorie": st.column_config.SelectboxColumn(
                 options=list(CATEGORIES) + ["Inconnue"]
             ),
             "Convives": st.column_config.NumberColumn(min_value=1, step=1),
             "Alcool": st.column_config.SelectboxColumn(options=["Oui", "Non"]),
+            "Validation": st.column_config.SelectboxColumn(
+                options=["À valider", "Validé", "Refusé"]
+            ),
             "Remarques": st.column_config.TextColumn(width="large"),
         },
     )
+
+    df["Hors alcool (€)"] = (df["Montant (€)"] - df["Alcool estimé (€)"]).clip(lower=0).round(2)
 
     # ---------- Contrôles ----------
     doublons = df.duplicated(
@@ -112,11 +163,12 @@ if fichiers:
     depassements = (df["Catégorie"] == "Restaurant") & (par_personne > plafond_resto)
 
     # ---------- KPI ----------
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("📄 Factures", len(df))
     col2.metric("💰 Total dépenses", f"{df['Montant (€)'].sum():.2f} €")
-    col3.metric("🍷 Factures avec alcool", int((df["Alcool"] == "Oui").sum()))
-    col4.metric("⚠️ À vérifier", int(df["Statut"].str.contains("vérifier").sum()))
+    col3.metric("✅ Total hors alcool", f"{df['Hors alcool (€)'].sum():.2f} €")
+    col4.metric("🍷 Factures avec alcool", int((df["Alcool"] == "Oui").sum()))
+    col5.metric("⚠️ À vérifier", int(df["Statut"].str.contains("vérifier").sum()))
 
     if doublons.any():
         st.warning("🔁 Doublons possibles : " + ", ".join(df.loc[doublons, "Fichier"]))
@@ -134,19 +186,29 @@ if fichiers:
     st.markdown("### Dépenses par catégorie")
     st.bar_chart(df.groupby("Catégorie")["Montant (€)"].sum())
 
-    # ---------- Export ----------
-    st.download_button(
-        "📥 Télécharger en CSV (Excel)",
-        df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+    # ---------- Exports ----------
+    export = df.copy()
+    export.insert(0, "Salarié", salarie)
+
+    c1, c2 = st.columns(2)
+    c1.download_button(
+        "📥 Télécharger en Excel",
+        exporter_excel(export),
+        file_name="notes_de_frais.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    c2.download_button(
+        "📥 Télécharger en CSV",
+        export.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
         file_name="notes_de_frais.csv",
         mime="text/csv",
     )
 
     # ---------- Détail par facture ----------
     with st.expander("🔍 Voir les images et le texte lu par l'OCR"):
-        for fichier in fichiers:
-            if fichier.name in textes:
+        for nom, _ in sources:
+            if nom in textes:
                 c1, c2 = st.columns([1, 2])
-                c1.image(fichier, caption=fichier.name, use_container_width=True)
-                c2.text(textes[fichier.name])
+                c1.image(apercus[nom], caption=nom, use_container_width=True)
+                c2.text(textes[nom])
                 st.markdown("---")
