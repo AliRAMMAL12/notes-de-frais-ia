@@ -4,6 +4,7 @@ Ce module ne dépend ni de Streamlit ni d'EasyOCR : il peut donc être testé
 facilement (voir test_extraction.py).
 """
 
+import difflib
 import re
 import unicodedata
 from datetime import datetime, timedelta
@@ -121,6 +122,16 @@ def _montants_ligne_ou_suivante(lignes: list[str], i: int) -> list[float]:
 # =========================================================
 
 
+def _fournisseur_approx(entete: str):
+    """Tolère les fautes de l'OCR (ex. 'goelettf' -> 'goelette') sur les noms longs."""
+    cles = [c for c in FOURNISSEURS if len(c) >= 6]
+    for mot in re.findall(r"[a-z]{6,}", entete):
+        proche = difflib.get_close_matches(mot, cles, n=1, cutoff=0.8)
+        if proche:
+            return FOURNISSEURS[proche[0]]
+    return None
+
+
 def extraire_fournisseur(texte: str, texte_norm: str):
     """Retourne (fournisseur, catégorie_déduite_ou_None)."""
     entete = "\n".join(texte_norm.split("\n")[:8])  # le nom est en haut du ticket
@@ -129,6 +140,10 @@ def extraire_fournisseur(texte: str, texte_norm: str):
         for cle, (nom, categorie) in FOURNISSEURS.items():
             if re.search(rf"\b{cle}", zone):
                 return nom, categorie
+
+    approx = _fournisseur_approx(entete)
+    if approx:
+        return approx
 
     # Repli : première ligne "propre" (assez de lettres, pas une date)
     for ligne in texte.split("\n"):
@@ -226,6 +241,48 @@ def detecter_alcool(texte_norm: str) -> str:
     return "Non"
 
 
+def estimer_montant_alcool(texte_norm: str) -> float:
+    """Somme des lignes d'articles contenant un mot d'alcool (estimation).
+
+    Le prix est cherché sur la ligne de l'article, sinon sur les 2 lignes
+    suivantes (l'OCR sépare souvent le nom et le prix), en s'arrêtant au
+    prochain article ou aux lignes de total / TVA.
+    """
+    lignes = texte_norm.split("\n")
+    utilisees = set()  # lignes de prix déjà comptées (évite les doubles comptages)
+    total = 0.0
+
+    for i, ligne in enumerate(lignes):
+        if not (REGEX_ALCOOL.search(ligne) or REGEX_1664.search(ligne)):
+            continue
+
+        valeurs = convertir_montants(ligne)
+        if valeurs:
+            if i not in utilisees:
+                utilisees.add(i)
+                total += max(valeurs)
+            continue
+
+        trouves = []
+        for j in range(i + 1, min(i + 3, len(lignes))):
+            suivante = lignes[j]
+            if re.match(r"\s*\d+\s*x\s+\S", suivante):  # nouvel article
+                break
+            if re.search(r"\b(total|ttc|tva|ht)\b", suivante):
+                break
+            if j in utilisees:
+                continue
+            valeurs = convertir_montants(suivante)
+            if valeurs:
+                trouves.append((j, max(valeurs)))
+        if trouves:
+            j, valeur = max(trouves, key=lambda t: t[1])
+            utilisees.update(j for j, _ in trouves)
+            total += valeur
+
+    return round(total, 2)
+
+
 # =========================================================
 # ANALYSE COMPLÈTE D'UN TICKET
 # =========================================================
@@ -252,6 +309,12 @@ def analyser(nom_fichier: str, texte: str, aujourdhui: datetime | None = None) -
 
     if categorie == "Restaurant" and convives is None:
         remarques.append("nombre de convives non détecté (1 par défaut)")
+    alcool = detecter_alcool(texte_norm)
+    montant_alcool = estimer_montant_alcool(texte_norm) if alcool == "Oui" else 0.0
+    if montant > 0:
+        montant_alcool = min(montant_alcool, montant)
+    if alcool == "Oui" and montant_alcool == 0:
+        remarques.append("alcool détecté mais montant non estimé")
     titres = extraire_titres_restaurant(texte_norm)
     if titres:
         remarques.append(f"payé en partie en titres-restaurant ({titres:.2f} €)")
@@ -265,7 +328,8 @@ def analyser(nom_fichier: str, texte: str, aujourdhui: datetime | None = None) -
         "Montant (€)": montant,
         "Catégorie": categorie,
         "Convives": convives or 1,
-        "Alcool": detecter_alcool(texte_norm),
+        "Alcool": alcool,
+        "Alcool estimé (€)": montant_alcool,
         "Statut": "⚠️ À vérifier" if problemes else "✅ OK",
         "Remarques": " ; ".join(problemes + remarques),
     }
